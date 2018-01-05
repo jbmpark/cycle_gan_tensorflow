@@ -10,14 +10,15 @@ import scipy
 np.set_printoptions(threshold=np.nan)
 
 
-GPU = '2'   
-if GPU=='3':
-    discriminator_type = 'dense'    #'patch_gan' , 'dense'
+GPU = '0'   
+discriminator_type = 'patch_gan'    #'patch_gan' , 'dense'
+normalization_style='instance_norm' # 'instance_norm' or 'batch_norm'
+
+
+if normalization_style=='instance_norm':
+    batch_size = 1
 else:
-    discriminator_type = 'patch_gan'    #'patch_gan' , 'dense'
-
-use_batch_norm=True
-
+    batch_size = 8
 #################################
 # parameters
 width  = 256
@@ -33,6 +34,9 @@ sample_dir = './samples_{}'.format(GPU)
 checkpoint_dir = './checkpoint_{}'.format(GPU)
 conv_kernel_size = 3
 
+
+
+
 kernel_init = tf.truncated_normal_initializer(stddev=0.02)
 bn_momentum=0.9
 bn_eps = 0.00001
@@ -40,6 +44,9 @@ if not os.path.exists(checkpoint_dir):
     os.makedirs(checkpoint_dir)
 if not os.path.exists(sample_dir):
     os.makedirs(sample_dir)
+
+from shutil import copyfile
+copyfile(__file__, sample_dir+'/'+__file__)
 
 ################################# 
 # input
@@ -50,16 +57,28 @@ PHASE = tf.placeholder(tf.bool, name='is_training')
 global_step = tf.Variable(0, trainable=False, name='global_step')
 learning_rate = tf.placeholder(tf.float32, shape=[])
 
+
+# instance_norm is borrowed from 'https://github.com/xhujoy/CycleGAN-tensorflow'
+def instance_norm(x, depth):
+    #depth = x.get_shape()[3]
+    #scale = tf.get_variable('instance_scale', [depth], initializer=tf.random_normal_initializer(1.0, 0.02))
+    #offset = tf.get_variable('instance_offset', [depth], initializer=tf.constant_initializer(0.0))
+    scale = tf.Variable(tf.random_normal([depth], mean=1.0, stddev=0.01))
+    offset = tf.Variable(tf.zeros([depth]))
+    mean, variance = tf.nn.moments(x, axes=[1, 2], keep_dims=True)
+    inv = tf.rsqrt(variance + 1e-5)
+    normalized = (x - mean) * inv
+    return scale * normalized + offset
 #################################
 # encode block (convolution)
-def enc(in_layer, num_out_tensor, kernel_size=conv_kernel_size, strides=(2,2), padding='same' , use_bn=use_batch_norm, phase=True, activation=None):
+def enc(in_layer, num_out_tensor, kernel_size=conv_kernel_size, strides=(2,2), padding='same' , use_bn=True, phase=True, activation=None):
+    _layer = tf.layers.conv2d(in_layer, num_out_tensor, kernel_size, strides=strides, padding=padding, activation=None, kernel_initializer=kernel_init)
     if use_bn:
-        use_bias=False
-    else: 
-        use_bias=True
-    _layer = tf.layers.conv2d(in_layer, num_out_tensor, kernel_size, strides=strides, padding=padding, activation=None, use_bias=use_bias, kernel_initializer=kernel_init)
-    if use_bn:
-        _layer = tf.layers.batch_normalization(_layer, training=phase, momentum=bn_momentum, epsilon=bn_eps) 
+        if normalization_style=='instance_norm':
+            _layer = instance_norm(_layer, num_out_tensor)
+        else:
+            _layer = tf.layers.batch_normalization(_layer, training=phase, momentum=bn_momentum, epsilon=bn_eps) 
+            
 
     if activation=='relu':
         _layer = tf.nn.relu(_layer)
@@ -70,14 +89,13 @@ def enc(in_layer, num_out_tensor, kernel_size=conv_kernel_size, strides=(2,2), p
 
 #################################
 # decode block (deconv)
-def dec(in_layer, num_out_tensor, kernel_size=conv_kernel_size, strides=(2,2), padding='same' , use_bn=use_batch_norm, phase=True, activation=None):
+def dec(in_layer, num_out_tensor, kernel_size=conv_kernel_size, strides=(2,2), padding='same' , use_bn=True, phase=True, activation=None):
+    _layer = tf.layers.conv2d_transpose(in_layer, num_out_tensor, kernel_size, strides=strides, padding=padding, activation=None, kernel_initializer=kernel_init)
     if use_bn:
-        use_bias=False
-    else:
-        use_bias=True
-    _layer = tf.layers.conv2d_transpose(in_layer, num_out_tensor, kernel_size, strides=strides, padding=padding, activation=None, use_bias=use_bias, kernel_initializer=kernel_init)
-    if use_bn:
-        _layer = tf.layers.batch_normalization(_layer, training=phase, momentum=bn_momentum, epsilon=bn_eps) 
+        if normalization_style=='instance_norm':
+            _layer = instance_norm(_layer, num_out_tensor)
+        else:
+            _layer = tf.layers.batch_normalization(_layer, training=phase, momentum=bn_momentum, epsilon=bn_eps) 
     
 
     if activation=='relu':
@@ -126,21 +144,19 @@ def Generator(input_image, is_training, variable_scope_name, reuse=False):
 #################################
 # discriminator
 #with tf.name_scope('Discriminator'):
-def Discriminator(input_image, Y, is_training, variable_scope_name, reuse=False):
+def Discriminator(input_image, is_training, variable_scope_name, reuse=False):
     with tf.variable_scope(variable_scope_name) as scope:
         if reuse:
             scope.reuse_variables()
-        input = tf.concat([input_image, Y], axis=3)     #256x256x?
-
         if discriminator_type=='patch_gan':
-            l1 = enc(input, 64, phase=is_training, use_bn=False, activation='lrelu')#128x128x64
+            l1 = enc(input_image, 64, phase=is_training, use_bn=False, activation='lrelu')#128x128x64
             l2 = enc(l1, 128, phase=is_training, activation='lrelu')         #64x64x128
             l3 = enc(l2, 256, phase=is_training, activation='lrelu')         #32x32x256
             l4 = enc(l3, 512, phase=is_training, activation='lrelu', strides=(1,1))         #32x32x512
             l5 = enc(l4, 1,  phase=is_training, activation=None, strides=(1,1))          #32x32x1
             return l5
         elif discriminator_type=='dense':
-            l1 = enc(input, 64, phase=is_training, use_bn=False, activation='lrelu')#128x128x64
+            l1 = enc(input_image, 64, phase=is_training, use_bn=False, activation='lrelu')#128x128x64
             l2 = enc(l1, 128, phase=is_training, activation='lrelu')         #64x64x128
             l3 = enc(l2, 256, phase=is_training, activation='lrelu')         #32x32x256
             l4 = enc(l3, 512, phase=is_training, activation='lrelu')         #16x16x512
@@ -164,13 +180,14 @@ with tf.device("/device:GPU:{}".format(GPU)):
     # gan network
     G = Generator(X_A, PHASE, variable_scope_name_G)
     F = Generator(X_B, PHASE, variable_scope_name_F)
-    D_A_real = Discriminator(X_A, X_B, PHASE, variable_scope_name_D_A)
-    D_A_fake = Discriminator(X_A, G, PHASE, variable_scope_name_D_A, reuse=True)
-    D_B_real = Discriminator(X_B, X_A, PHASE, variable_scope_name_D_B)
-    D_B_fake = Discriminator(X_B, F, PHASE, variable_scope_name_D_B, reuse=True)
+    D_A_real = Discriminator(X_B,   PHASE, variable_scope_name_D_A)
+    D_A_fake = Discriminator(G,     PHASE, variable_scope_name_D_A, reuse=True)
+    D_B_real = Discriminator(X_A,   PHASE, variable_scope_name_D_B)
+    D_B_fake = Discriminator(F,     PHASE, variable_scope_name_D_B, reuse=True)
     
     A_cycle = Generator(G, PHASE, variable_scope_name_F, reuse=True)    
-    B_cycle = Generator(F, PHASE, variable_scope_name_G, reuse=True)    
+    B_cycle = Generator(F, PHASE, variable_scope_name_G, reuse=True)
+
     #################################
 
     # train step
@@ -178,18 +195,20 @@ with tf.device("/device:GPU:{}".format(GPU)):
     D_A_loss_fake = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=D_A_fake, labels=tf.zeros_like(D_A_fake)))
     D_B_loss_real = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=D_B_real, labels=tf.ones_like(D_B_real)))
     D_B_loss_fake = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=D_B_fake, labels=tf.zeros_like(D_B_fake)))
-    D_A_loss = D_A_loss_real + D_A_loss_fake
-    D_B_loss = D_B_loss_real + D_B_loss_fake
+    D_A_loss = (D_A_loss_real + D_A_loss_fake)/2
+    D_B_loss = (D_B_loss_real + D_B_loss_fake)/2
+
 
     G_loss_gan = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=D_A_fake, labels=tf.ones_like(D_A_fake)))
-    G_loss_cycle = tf.reduce_mean(tf.abs(X_A-A_cycle))
     F_loss_gan = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=D_B_fake, labels=tf.ones_like(D_B_fake)))
+    G_loss_cycle = tf.reduce_mean(tf.abs(X_A-A_cycle))
     F_loss_cycle = tf.reduce_mean(tf.abs(X_B-B_cycle))
+    loss_cycle =  G_loss_cycle+F_loss_cycle
      
     
-    G_gan_loss_ratio = 0.1
-    G_loss = G_gan_loss_ratio*G_loss_gan + (1-G_gan_loss_ratio)*G_loss_cycle
-    F_loss = G_gan_loss_ratio*F_loss_gan + (1-G_gan_loss_ratio)*F_loss_cycle
+    G_gan_loss_ratio = (1.0/11.0)
+    G_loss = G_gan_loss_ratio*G_loss_gan + (1.0-G_gan_loss_ratio)*loss_cycle
+    F_loss = G_gan_loss_ratio*F_loss_gan + (1.0-G_gan_loss_ratio)*loss_cycle
 
     D_A_var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=variable_scope_name_D_A)
     D_B_var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=variable_scope_name_D_B)
@@ -239,7 +258,6 @@ def read_batch(batch_file_list):
 # training
 
 # data 
-batch_size = 8
 train_data_file_list_A = glob.glob(os.path.join(train_data_dir_A, '*.jpg'))
 train_data_file_list_B = glob.glob(os.path.join(train_data_dir_B, '*.jpg'))
 train_num_data_A = len(train_data_file_list_A)
@@ -321,9 +339,7 @@ for e in range(epoch):
             "G_loss: {:.04}".format(G_batch_loss), \
             "F_loss: {:.04}".format(F_batch_loss) )
 
-        saver.save(sess, checkpoint_dir+'/cycle_gan.ckpt', global_step=global_step)
-        
-        
+               
         # testing
         if b==(train_num_batch-1): 
             is_training=False
@@ -349,6 +365,11 @@ for e in range(epoch):
     is_training=False
     summary = sess.run(merged, feed_dict={X_A:test_A, X_B:test_B, PHASE:is_training})
     writer.add_summary(summary, global_step=sess.run(global_step))
+
+
+
+
+
 
 
 
