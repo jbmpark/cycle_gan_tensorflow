@@ -313,7 +313,7 @@ for e in range(epoch):
     if(e < 100) :
         lr = base_lr
     else:
-        lr = base_lr - base_lr*(epoch-100)/100
+        lr = base_lr - base_lr*(e-100)/100
 
 
     for b in range(train_num_batch):
