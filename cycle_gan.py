@@ -12,13 +12,13 @@ np.set_printoptions(threshold=np.nan)
 
 GPU = '0'   
 discriminator_type = 'patch_gan'    #'patch_gan' , 'dense'
-normalization_style='instance_norm' # 'instance_norm' or 'batch_norm'
+normalization_style='batch_norm' # 'instance_norm' or 'batch_norm'
 
 
 if normalization_style=='instance_norm':
     batch_size = 1
 else:
-    batch_size = 8
+    batch_size = 6
 #################################
 # parameters
 width  = 256
@@ -63,7 +63,7 @@ def instance_norm(x, depth):
     #depth = x.get_shape()[3]
     #scale = tf.get_variable('instance_scale', [depth], initializer=tf.random_normal_initializer(1.0, 0.02))
     #offset = tf.get_variable('instance_offset', [depth], initializer=tf.constant_initializer(0.0))
-    scale = tf.Variable(tf.random_normal([depth], mean=1.0, stddev=0.01))
+    scale = tf.Variable(tf.random_normal([depth], mean=1.0, stddev=0.02))
     offset = tf.Variable(tf.zeros([depth]))
     mean, variance = tf.nn.moments(x, axes=[1, 2], keep_dims=True)
     inv = tf.rsqrt(variance + 1e-5)
@@ -121,7 +121,7 @@ def Generator(input_image, is_training, variable_scope_name, reuse=False):
             scope.reuse_variables()
 
         # Encoder
-        e1 = enc(input_image,   64,     kernel_size=7, strides=(1,1), phase=is_training, use_bn=False, activation='relu')    #256x256x64
+        e1 = enc(input_image,   64,     kernel_size=7, strides=(1,1), phase=is_training, activation='relu')    #256x256x64
         e2 = enc(e1,            128,    kernel_size=3, strides=(2,2), phase=is_training, activation='relu')                  #128x128x128
         e3 = enc(e2,            256,    kernel_size=3, strides=(2,2), phase=is_training, activation='relu')                  #64x64x256
 
@@ -131,11 +131,15 @@ def Generator(input_image, is_training, variable_scope_name, reuse=False):
         t3 = transform_resnet(t2,   256,    phase=is_training)
         t4 = transform_resnet(t3,   256,    phase=is_training)
         t5 = transform_resnet(t4,   256,    phase=is_training)
+        t6 = transform_resnet(t5,   256,    phase=is_training)
+        t7 = transform_resnet(t6,   256,    phase=is_training)
+        t8 = transform_resnet(t7,   256,    phase=is_training)
+        t9 = transform_resnet(t8,   256,    phase=is_training)
 
         # Decoder
-        d1 = dec(t5, 128, kernel_size=3, strides=(2,2), phase=is_training, activation='relu')      #128x128x128
+        d1 = dec(t9, 128, kernel_size=3, strides=(2,2), phase=is_training, activation='relu')      #128x128x128
         d2 = dec(d1, 64,  kernel_size=3, strides=(2,2), phase=is_training, activation='relu')      #256x256x64
-        d3 = enc(d2, 3,   kernel_size=7, strides=(1,1), phase=is_training, use_bn=False, activation=None)    #256x256x3
+        d3 = enc(d2, 3,   kernel_size=7, strides=(1,1), phase=is_training, activation=None)    #256x256x3
         d4 = tf.nn.tanh(d3)
     return d4
 
@@ -153,7 +157,7 @@ def Discriminator(input_image, is_training, variable_scope_name, reuse=False):
             l2 = enc(l1, 128, phase=is_training, activation='lrelu')         #64x64x128
             l3 = enc(l2, 256, phase=is_training, activation='lrelu')         #32x32x256
             l4 = enc(l3, 512, phase=is_training, activation='lrelu', strides=(1,1))         #32x32x512
-            l5 = enc(l4, 1,  phase=is_training, activation=None, strides=(1,1))          #32x32x1
+            l5 = enc(l4, 1,  phase=is_training, use_bn=False, activation=None, strides=(1,1))          #32x32x1
             return l5
         elif discriminator_type=='dense':
             l1 = enc(input_image, 64, phase=is_training, use_bn=False, activation='lrelu')#128x128x64
@@ -313,7 +317,8 @@ for e in range(epoch):
     if(e < 100) :
         lr = base_lr
     else:
-        lr = base_lr - base_lr*(e-100)/100
+        #lr = base_lr - base_lr*(e-100)/100
+        lr = base_lr/10
 
 
     for b in range(train_num_batch):
@@ -324,14 +329,15 @@ for e in range(epoch):
 
         #train 
         is_training=True
+        G_, G_batch_loss, F_, F_batch_loss = \
+            sess.run([G_train, G_loss, F_train, F_loss], \
+            feed_dict={X_A:input_A, X_B:input_B, PHASE:is_training, learning_rate:lr})
+
         D_A_, D_A_batch_loss, D_B_, D_B_batch_loss = \
             sess.run([D_A_train, D_A_loss, D_B_train, D_B_loss], \
             feed_dict={X_A:input_A, X_B:input_B, PHASE:is_training, learning_rate:lr})
 
-        G_, G_batch_loss, F_, F_batch_loss = \
-            sess.run([G_train, G_loss, F_train, F_loss], \
-            feed_dict={X_A:input_A, X_B:input_B, PHASE:is_training, learning_rate:lr})
-        
+         
         print("epoch: %04d"%e, "batch: %05d"%b, \
             "lr: {:.04}".format(lr), \
             "D_A_loss: {:.04}".format(D_A_batch_loss), \
@@ -341,36 +347,31 @@ for e in range(epoch):
 
                
         # testing
-        if b==(train_num_batch-1): 
-            is_training=False
-            samples_G = sess.run(G, feed_dict={X_A:test_A, X_B:test_B, PHASE:is_training})
-            samples_F = sess.run(F, feed_dict={X_A:test_A, X_B:test_B, PHASE:is_training})
-            samples_G = (samples_G+1.0)/2.0
-            samples_F = (samples_F+1.0)/2.0
-            fig, ax = plt.subplots(4, test_size, figsize=(test_size, 2), dpi=400)
-            for k in range(test_size):
-                ax[0][k].set_axis_off()
-                ax[0][k].imshow(test_A_recon[k])
-                ax[1][k].set_axis_off()
-                ax[1][k].imshow(samples_G[k])
-                ax[2][k].set_axis_off()
-                ax[2][k].imshow(test_B_recon[k])
-                ax[3][k].set_axis_off()
-                ax[3][k].imshow(samples_F[k])
-            plt.savefig(sample_dir+'/cycle_gan_{}'.format(str(e).zfill(3)) + '_{}.png'.format(str(b).zfill(5)), bbox_inches='tight')
-            plt.close(fig)
+        if not e%10:
+            if b==(train_num_batch-1): 
+                is_training=False
+                samples_G = sess.run(G, feed_dict={X_A:test_A, X_B:test_B, PHASE:is_training})
+                samples_F = sess.run(F, feed_dict={X_A:test_A, X_B:test_B, PHASE:is_training})
+                samples_G = (samples_G+1.0)/2.0
+                samples_F = (samples_F+1.0)/2.0
+                fig, ax = plt.subplots(4, test_size, figsize=(test_size, 2), dpi=400)
+                for k in range(test_size):
+                    ax[0][k].set_axis_off()
+                    ax[0][k].imshow(test_A_recon[k])
+                    ax[1][k].set_axis_off()
+                    ax[1][k].imshow(samples_G[k])
+                    ax[2][k].set_axis_off()
+                    ax[2][k].imshow(test_B_recon[k])
+                    ax[3][k].set_axis_off()
+                    ax[3][k].imshow(samples_F[k])
+                plt.savefig(sample_dir+'/cycle_gan_{}'.format(str(e).zfill(3)) + '_{}.png'.format(str(b).zfill(5)), bbox_inches='tight')
+                plt.close(fig)
 
-    saver.save(sess, checkpoint_dir+'/cycle_gan.ckpt', global_step=global_step)
-    #tensorboard
-    is_training=False
-    summary = sess.run(merged, feed_dict={X_A:test_A, X_B:test_B, PHASE:is_training})
-    writer.add_summary(summary, global_step=sess.run(global_step))
-
-
-
-
-
-
+                saver.save(sess, checkpoint_dir+'/cycle_gan.ckpt', global_step=global_step)
+                #tensorboard
+                is_training=False
+                summary = sess.run(merged, feed_dict={X_A:test_A, X_B:test_B, PHASE:is_training})
+                writer.add_summary(summary, global_step=sess.run(global_step))
 
 
 
